@@ -1,6 +1,6 @@
 import sqlite3
 
-class DatabaseConnection:
+class ExecuteQuery:
     def __init__(self, db_name, query,par):
         self.db_name = db_name
         self.connection = None
@@ -19,5 +19,5 @@ class DatabaseConnection:
             print(f"An error occurred: {exc_value}")
         return False
     
-with DatabaseConnection('users.db', "SELECT * FROM users WHERE id = ?", 1) as conn:
+with ExecuteQuery('users.db', "SELECT * FROM users WHERE id = ?", 1) as conn:
     print("Connection established and query executed successfully.")
