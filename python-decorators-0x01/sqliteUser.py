@@ -10,3 +10,10 @@ cursor.execute('''
                    email TEXT NOT NULL UNIQUE,
                    age INTEGER NOT NULL 
                 );''')
+
+cursor.execute('''
+               INSERT INTO users (name, email, age) VALUES (
+                     'Kate', 'Kate@email.com', 30
+                );''')
+db.commit()
+db.close()
