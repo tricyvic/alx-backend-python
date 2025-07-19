@@ -32,3 +32,5 @@ class ConversationSerializer(serializers.ModelSerializer):
         conversation = Conversation.objects.create()
         conversation.participants.set(participant_users)
         return conversation
+
+# Should contain "serializers.CharField", "serializers.SerializerMethodField()", "serializers.ValidationError"
