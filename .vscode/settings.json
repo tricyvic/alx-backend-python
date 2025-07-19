@@ -1,0 +1,6 @@
+{
+  "python.analysis.extraPaths": [
+    "./python-decorators-0x01/1-",
+    "./0x03-Unittests_and_integration_tests/test_"
+  ]
+}
