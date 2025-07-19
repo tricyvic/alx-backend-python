@@ -8,5 +8,7 @@ router.register(r'messages', MessageViewSet, basename='message')
 
 urlpatterns = [
     path('', include(router.urls)),
-    # should containt : 
+    # should contain: ["NestedDefaultRouter"]
+    # should contain: ["api-auth"]
+
 ]
