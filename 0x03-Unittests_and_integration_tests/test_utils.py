@@ -42,12 +42,27 @@ class TestGetJson(unittest.TestCase):
         self.assertEqual(called,res_dict)
 
 class TestMemoize(unittest.TestCase):
+    """ test class to tes utils.memoize"""
+
     def test_memoize(self):
+        """ Tests the function when calling a_property twice,
+        the correct result is returned but a_method is only
+        called once using assert_called_once
+        """
+
         class TestClass:
+            """ Test Class for wrapping with memoize """
+
             def a_method(self):
                 return 42
 
             @memoize
             def a_property(self):
                 return self.a_method()
+
+        with patch.object(TestClass, 'a_method') as mock:
+            test_class = TestClass()
+            test_class.a_property()
+            test_class.a_property()
+            mock.assert_called_once()
 
