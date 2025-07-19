@@ -1,53 +1,60 @@
 #!/usr/bin/env python3
-import unittest
-import requests
-from unittest.mock import patch,Mock
-from utils import access_nested_map,get_json,memoize
+""" Module for testing utils """
+
 from parameterized import parameterized
+import unittest
+from unittest.mock import patch
+from utils import (access_nested_map, get_json, memoize)
+import requests
+
 
 class TestAccessNestedMap(unittest.TestCase):
+    """ Testing Class Access Nested Map """
+
     @parameterized.expand([
         ({"a": 1}, ("a",), 1),
-        ({"a": {"b": 2}}, ("a", "b"), 2),
-        ({"a": {"b": {"c": 3}}}, ("a", "b", "c"), 3),
+        ({"a": {"b": 2}}, ("a",), {'b': 2}),
+        ({"a": {"b": 2}}, ("a", "b"), 2)
     ])
     def test_access_nested_map(self, nested_map, path, expected):
-        result = access_nested_map(nested_map, path)
-        self.assertEqual(result, expected)
-    
+        """ Test that the method returns what it is supposed to """
+        self.assertEqual(access_nested_map(nested_map, path), expected)
+
     @parameterized.expand([
-        ({},("a",)),
-        ({"a": 1},("a", "b")),
+        ({}, ("a",), 'a'),
+        ({"a": 1}, ("a", "b"), 'b')
     ])
-    def test_access_nested_map_exception(self, nested_map, path):
-        with self.assertRaises(KeyError) as x:
+    def test_access_nested_map_exception(self, nested_map, path, expected):
+        """ KeyError is raised for the respective inputs """
+        with self.assertRaises(KeyError) as e:
             access_nested_map(nested_map, path)
+        self.assertEqual(f"KeyError('{expected}')", repr(e.exception))
+
 
 class TestGetJson(unittest.TestCase):
+    """ Class for Testing Get Json """
+
     @parameterized.expand([
-        ("http://example.com",({"payload": True})),
-        ("http://holberton.io",({"payload": False}))
+        ("http://example.com", {"payload": True}),
+        ("http://holberton.io", {"payload": False})
     ])
-    @patch('requests.get')
-    def test_get_json(self,test_url,test_payload,mock_get):
-        mock_res = Mock()
-        res_dict = test_payload
-        mock_res.json.return_value = res_dict
+    def test_get_json(self, test_url, test_payload):
+        """utils.get_json returns the expected result.Test"""
+        config = {'return_value.json.return_value': test_payload}
+        patcher = patch('requests.get', **config)
+        mock = patcher.start()
+        self.assertEqual(get_json(test_url), test_payload)
+        mock.assert_called_once()
+        patcher.stop()
 
-        mock_get.return_value = mock_res
-
-        called = get_json(test_url)
-        mock_get.assert_called_with(test_url)
-
-        self.assertEqual(called,res_dict)
 
 class TestMemoize(unittest.TestCase):
-    """ test class to tes utils.memoize"""
+    """ Testing Memoize Class """
 
     def test_memoize(self):
-        """ Tests the function when calling a_property twice,
-        the correct result is returned but a_method is only
-        called once using assert_called_once
+        """ Test that when calling a_property twice, the correct result
+        is returned but a_method is only called once using
+        assert_called_once
         """
 
         class TestClass:
@@ -65,4 +72,3 @@ class TestMemoize(unittest.TestCase):
             test_class.a_property()
             test_class.a_property()
             mock.assert_called_once()
-
