@@ -7,7 +7,7 @@ services:
     env_file:
       - .env
     environment:
-      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_DATABASE: ${MYSQL_DB}
       MYSQL_USER: ${MYSQL_USER}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
@@ -30,3 +30,5 @@ services:
 
 volumes:
   db_data:
+
+# python3 manage.py runserver
