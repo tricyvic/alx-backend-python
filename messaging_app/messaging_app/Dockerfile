@@ -8,19 +8,17 @@ ENV PYTHONUNBUFFERED=1
 # Set work directory
 WORKDIR /app
 
-# Install system dependencies for MySQL
+# Install system dependencies
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        default-libmysqlclient-dev \
-        build-essential \
-        pkg-config \
+        postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Install necessary dependencies from the requirements.txt
 COPY requirements.txt /app/
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy your app code into the container
+# Copy app code into the container
 COPY . /app/
 
 # Create a non-root user
@@ -28,7 +26,7 @@ RUN adduser --disabled-password --gecos '' appuser
 RUN chown -R appuser:appuser /app
 USER appuser
 
-# Expose the port your Django app runs on (default is 8000)
+# Expose the port Django app runs on (default is 8000)
 EXPOSE 8000
 
 # Run the application

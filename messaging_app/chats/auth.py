@@ -1,331 +1,223 @@
-from django.contrib.auth import authenticate, get_user_model
-from django.contrib.auth.backends import ModelBackend
-from django.core.exceptions import ValidationError
-from rest_framework import authentication, exceptions
-from rest_framework_simplejwt.authentication import JWTAuthentication
-from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
+from rest_framework import serializers, status
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
-from django.utils.translation import gettext_lazy as _
-from django.contrib.auth.models import AnonymousUser
-from typing import Optional, Tuple, Any, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from django.contrib.auth.models import AbstractBaseUser as UserType
-import logging
-
-User = get_user_model()
-logger = logging.getLogger(__name__)
+from rest_framework_simplejwt.views import TokenObtainPairView
+from django.contrib.auth import authenticate
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError
+from .models import User
+from .serializers import UserSerializer
 
 
-class EmailOrUsernameModelBackend(ModelBackend):
+class CustomTokenObtainPairSerializer(serializers.Serializer):
     """
-    Custom authentication backend that allows users to log in using either
-    their username or email address.
+    Custom serializer for JWT token generation with email-based authentication.
     """
-    
-    def authenticate(self, request, username=None, password=None, **kwargs):
-        """
-        Authenticate user by username or email
-        """
-        if username is None:
-            username = kwargs.get(User.USERNAME_FIELD)
-        
-        if username is None or password is None:
-            return None
-        
-        try:
-            # Try to get user by username first
+    email = serializers.EmailField()
+    password = serializers.CharField()
+
+    def validate(self, attrs):
+        email = attrs.get('email')
+        password = attrs.get('password')
+
+        if email and password:
+            # Authenticate using email instead of username
             try:
-                user = User.objects.get(username=username)
+                user = User.objects.get(email=email)
+                user = authenticate(request=self.context.get('request'), username=user.username, password=password)
+                
+                if not user:
+                    raise serializers.ValidationError('Invalid credentials')
+                
+                if not user.is_active:
+                    raise serializers.ValidationError('User account is disabled')
+                
+                # Generate tokens
+                refresh = RefreshToken.for_user(user)
+                
+                return {
+                    'refresh': str(refresh),
+                    'access': str(refresh.access_token),
+                    'user': UserSerializer(user).data
+                }
+                
             except User.DoesNotExist:
-                # If username doesn't exist, try email
-                try:
-                    user = User.objects.get(email=username)
-                except User.DoesNotExist:
-                    # Run the default password hasher once to reduce the timing
-                    # difference between an existing and a nonexistent user (#20760).
-                    User().set_password(password)
-                    return None
-        except User.MultipleObjectsReturned:
-            # Multiple users with same email - this shouldn't happen if email is unique
-            logger.warning(f"Multiple users found with identifier: {username}")
-            return None
-        
-        if user.check_password(password) and self.user_can_authenticate(user):
-            logger.info(f"User {user.username} authenticated successfully")
-            return user
-        
-        return None
+                raise serializers.ValidationError('Invalid credentials')
+        else:
+            raise serializers.ValidationError('Must include email and password')
 
 
-class CustomJWTAuthentication(JWTAuthentication):
+class CustomTokenObtainPairView(TokenObtainPairView):
     """
-    Custom JWT authentication that provides better error handling
-    and logging for authentication attempts.
+    Custom JWT token view that uses email for authentication.
     """
+    serializer_class = CustomTokenObtainPairSerializer
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def register_user(request):
+    """
+    Register a new user and return JWT tokens.
+    """
+    serializer = UserSerializer(data=request.data)
     
-    def authenticate(self, request):
-        """
-        Authenticate the request and return a tuple of (user, token) if successful,
-        or None if authentication fails.
-        """
+    if serializer.is_valid():
+        # Validate password
+        password = serializer.validated_data.get('password')
         try:
-            result = super().authenticate(request)
-            if result:
-                user, validated_token = result
-                logger.info(f"JWT authentication successful for user: {user.username}")
-                return result
-            return None
-        except InvalidToken as e:
-            logger.warning(f"Invalid JWT token: {str(e)}")
-            raise exceptions.AuthenticationFailed(_('Invalid token.'))
-        except TokenError as e:
-            logger.warning(f"JWT token error: {str(e)}")
-            raise exceptions.AuthenticationFailed(_('Token error.'))
-        except Exception as e:
-            logger.error(f"Unexpected JWT authentication error: {str(e)}")
-            raise exceptions.AuthenticationFailed(_('Authentication failed.'))
-
-
-class APIKeyAuthentication(authentication.BaseAuthentication):
-    """
-    Custom API Key authentication for service-to-service communication.
-    Add API keys to user profiles for this to work.
-    """
-    keyword = 'ApiKey'
-    
-    def authenticate(self, request):
-        """
-        Authenticate using API key in the Authorization header.
-        Format: Authorization: ApiKey <api_key>
-        """
-        auth = authentication.get_authorization_header(request).split()
+            validate_password(password)
+        except ValidationError as e:
+            return Response({
+                'error': 'Password validation failed',
+                'details': list(e.messages)
+            }, status=status.HTTP_400_BAD_REQUEST)
         
-        if not auth or auth[0].lower() != self.keyword.lower().encode():
-            return None
+        # Create user
+        user = serializer.save()
         
-        if len(auth) == 1:
-            msg = _('Invalid API key header. No credentials provided.')
-            raise exceptions.AuthenticationFailed(msg)
-        elif len(auth) > 2:
-            msg = _('Invalid API key header. Credentials string should not contain spaces.')
-            raise exceptions.AuthenticationFailed(msg)
-        
-        try:
-            api_key = auth[1].decode()
-        except UnicodeError:
-            msg = _('Invalid API key header. Credentials string should not contain invalid characters.')
-            raise exceptions.AuthenticationFailed(msg)
-        
-        return self.authenticate_credentials(api_key)
-    
-    def authenticate_credentials(self, api_key):
-        """
-        Authenticate the API key and return the corresponding user.
-        """
-        try:
-            # Assuming you have an api_key field in your User model
-            # If not, you might need to create a separate APIKey model
-            user = User.objects.get(api_key=api_key, is_active=True)
-        except User.DoesNotExist:
-            logger.warning(f"API key authentication failed for key: {api_key[:8]}...")
-            raise exceptions.AuthenticationFailed(_('Invalid API key.'))
-        except AttributeError:
-            # If User model doesn't have api_key field
-            logger.error("API key authentication requires api_key field in User model")
-            raise exceptions.AuthenticationFailed(_('API key authentication not properly configured.'))
-        
-        logger.info(f"API key authentication successful for user: {user.username}")
-        return (user, api_key)
-
-
-class SessionOrTokenAuthentication(authentication.BaseAuthentication):
-    """
-    Composite authentication class that tries session authentication first,
-    then falls back to JWT token authentication.
-    """
-    
-    def authenticate(self, request):
-        """
-        Try session authentication first, then JWT token authentication.
-        """
-        # Try session authentication first
-        session_auth = authentication.SessionAuthentication()
-        try:
-            result = session_auth.authenticate(request)
-            if result:
-                logger.info(f"Session authentication successful for user: {result[0].username}")
-                return result
-        except exceptions.AuthenticationFailed:
-            pass  # Continue to JWT authentication
-        
-        # Try JWT authentication
-        jwt_auth = CustomJWTAuthentication()
-        try:
-            result = jwt_auth.authenticate(request)
-            if result:
-                return result
-        except exceptions.AuthenticationFailed:
-            pass  # Authentication failed
-        
-        return None
-
-
-class TokenService:
-    """
-    Service class for token-related operations
-    """
-    
-    @staticmethod
-    def generate_tokens_for_user(user) -> dict:
-        """
-        Generate access and refresh tokens for a user
-        """
+        # Generate tokens
         refresh = RefreshToken.for_user(user)
-        return {
+        
+        return Response({
+            'user': UserSerializer(user).data,
             'refresh': str(refresh),
             'access': str(refresh.access_token),
-            'access_expires_in': refresh.access_token.lifetime.total_seconds() if refresh.access_token.lifetime is not None else 0,
-            'refresh_expires_in': refresh.lifetime.total_seconds() if refresh.lifetime is not None else 0,
-        }
+            'message': 'User created successfully'
+        }, status=status.HTTP_201_CREATED)
     
-    @staticmethod
-    def blacklist_token(token: str) -> bool:
-        """
-        Blacklist a refresh token
-        """
-        try:
-            # Convert the string token to a validated token object
-            from rest_framework_simplejwt.tokens import UntypedToken
-            validated_token = UntypedToken(token)
-            refresh_token = RefreshToken(validated_token)
-            refresh_token.blacklist()
-            return True
-        except Exception as e:
-            logger.error(f"Failed to blacklist token: {str(e)}")
-            return False
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-class AuthenticationHelper:
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def login_user(request):
     """
-    Helper class for authentication-related utilities
+    Login user with email and password, return JWT tokens.
     """
+    email = request.data.get('email')
+    password = request.data.get('password')
     
-    @staticmethod
-    def is_authenticated_user(user) -> bool:
-        """
-        Check if user is authenticated and active
-        """
-        return (
-            user and 
-            not isinstance(user, AnonymousUser) and 
-            user.is_authenticated and 
-    @staticmethod
-    def get_user_from_token(token: str) -> Optional["UserType"]:
-        """
-        Get user from JWT token
-        """
-        try:
-            from rest_framework_simplejwt.tokens import AccessToken
-            access_token = AccessToken(token=token)
-            user_id = access_token['user_id']
-            return User.objects.get(id=user_id, is_active=True)
-        except Exception as e:
-            logger.error(f"Failed to get user from token: {str(e)}")
-            return None
-        except Exception as e:
-            logger.error(f"Failed to get user from token: {str(e)}")
-            return None
+    if not email or not password:
+        return Response({
+            'error': 'Email and password are required'
+        }, status=status.HTTP_400_BAD_REQUEST)
     
-    @staticmethod
-    def validate_password_strength(password: str) -> Tuple[bool, list]:
-        """
-        Validate password strength
-        """
-        errors = []
+    try:
+        user = User.objects.get(email=email)
+        user = authenticate(request=request, username=user.username, password=password)
         
-        if len(password) < 8:
-            errors.append("Password must be at least 8 characters long.")
-        
-        if not any(char.isupper() for char in password):
-            errors.append("Password must contain at least one uppercase letter.")
-        
-        if not any(char.islower() for char in password):
-            errors.append("Password must contain at least one lowercase letter.")
-        
-        if not any(char.isdigit() for char in password):
-            errors.append("Password must contain at least one digit.")
-        
-        if not any(char in "!@#$%^&*()_+-=[]{}|;:,.<>?" for char in password):
-            errors.append("Password must contain at least one special character.")
-        
-        return len(errors) == 0, errors
-
-
-class RateLimitedAuthentication(authentication.BaseAuthentication):
-    """
-    Authentication class with built-in rate limiting
-    """
-    
-    def __init__(self):
-        self.auth_attempts = {}  # In production, use Redis or database
-        self.max_attempts = 5
-        self.lockout_duration = 300  # 5 minutes
-    
-    def authenticate(self, request):
-        """
-        Authenticate with rate limiting
-        """
-        client_ip = self.get_client_ip(request)
-        
-        if self.is_rate_limited(client_ip):
-            raise exceptions.Throttled(
-                detail=_('Too many authentication attempts. Please try again later.')
-            )
-        
-        # Proceed with actual authentication (implement your auth logic here)
-        # This is a base class - extend it with actual authentication logic
-        return None
-    
-    def get_client_ip(self, request):
-        """
-        Get client IP address
-        """
-        x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
-        if x_forwarded_for:
-            ip = x_forwarded_for.split(',')[0]
-        else:
-            ip = request.META.get('REMOTE_ADDR')
-        return ip
-    
-    def is_rate_limited(self, client_ip):
-        """
-        Check if client IP is rate limited
-        """
-        import time
-        current_time = time.time()
-        
-        if client_ip in self.auth_attempts:
-            attempts, last_attempt = self.auth_attempts[client_ip]
+        if user:
+            if not user.is_active:
+                return Response({
+                    'error': 'User account is disabled'
+                }, status=status.HTTP_400_BAD_REQUEST)
             
-            # Reset if lockout duration has passed
-            if current_time - last_attempt > self.lockout_duration:
-                del self.auth_attempts[client_ip]
-                return False
+            # Generate tokens
+            refresh = RefreshToken.for_user(user)
             
-            return attempts >= self.max_attempts
-        
-        return False
-    
-    def record_failed_attempt(self, client_ip):
-        """
-        Record a failed authentication attempt
-        """
-        import time
-        current_time = time.time()
-        
-        if client_ip in self.auth_attempts:
-            attempts, _ = self.auth_attempts[client_ip]
-            self.auth_attempts[client_ip] = (attempts + 1, current_time)
+            return Response({
+                'user': UserSerializer(user).data,
+                'refresh': str(refresh),
+                'access': str(refresh.access_token),
+                'message': 'Login successful'
+            }, status=status.HTTP_200_OK)
         else:
-            self.auth_attempts[client_ip] = (1, current_time)
+            return Response({
+                'error': 'Invalid credentials'
+            }, status=status.HTTP_401_UNAUTHORIZED)
+            
+    except User.DoesNotExist:
+        return Response({
+            'error': 'Invalid credentials'
+        }, status=status.HTTP_401_UNAUTHORIZED)
+
+
+@api_view(['POST'])
+def logout_user(request):
+    """
+    Logout user by blacklisting the refresh token.
+    """
+    try:
+        refresh_token = request.data.get('refresh')
+        if refresh_token:
+            token = RefreshToken(refresh_token)
+            token.blacklist()
+            return Response({
+                'message': 'Logout successful'
+            }, status=status.HTTP_200_OK)
+        else:
+            return Response({
+                'error': 'Refresh token is required'
+            }, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        return Response({
+            'error': 'Invalid token'
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+def user_profile(request):
+    """
+    Get current user profile.
+    """
+    serializer = UserSerializer(request.user)
+    return Response(serializer.data)
+
+
+@api_view(['PUT', 'PATCH'])
+def update_profile(request):
+    """
+    Update current user profile.
+    """
+    serializer = UserSerializer(request.user, data=request.data, partial=True)
+    
+    if serializer.is_valid():
+        user = serializer.save()
+        return Response({
+            'user': UserSerializer(user).data,
+            'message': 'Profile updated successfully'
+        }, status=status.HTTP_200_OK)
+    
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+def change_password(request):
+    """
+    Change user password.
+    """
+    old_password = request.data.get('old_password')
+    new_password = request.data.get('new_password')
+    
+    if not old_password or not new_password:
+        return Response({
+            'error': 'Both old_password and new_password are required'
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    user = request.user
+    
+    # Check old password
+    if not user.check_password(old_password):
+        return Response({
+            'error': 'Invalid old password'
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    # Validate new password
+    try:
+        validate_password(new_password, user)
+    except ValidationError as e:
+        return Response({
+            'error': 'Password validation failed',
+            'details': list(e.messages)
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    # Set new password
+    user.set_password(new_password)
+    user.save()
+    
+    return Response({
+        'message': 'Password changed successfully'
+    }, status=status.HTTP_200_OK)
